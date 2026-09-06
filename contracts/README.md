@@ -70,7 +70,7 @@ contract's `owner` becomes whichever address you pass as `--sender`, i.e.
 forge script script/Deploy.s.sol \
   --rpc-url base_sepolia \
   --account backend-signer --sender <backend-signer address> \
-  --broadcast --verify --etherscan-api-key "$BASESCAN_API_KEY"
+  --broadcast --verify --etherscan-api-key "$ETHERSCAN_API_KEY"
 ```
 
 Copy the deployed address into the Next.js app's `LOYALTY_CARD_ADDRESS`, and
