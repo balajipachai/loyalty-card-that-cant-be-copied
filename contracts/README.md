@@ -61,7 +61,7 @@ keystore once:
 cast wallet import backend-signer --interactive
 ```
 
-Set `BASE_SEPOLIA_RPC_URL` (and optionally `BASESCAN_API_KEY` to verify) in
+Set `BASE_SEPOLIA_RPC_URL` (and optionally `ETHERSCAN_API_KEY` to verify) in
 your shell or a local, gitignored `.env`, then deploy - the deployed
 contract's `owner` becomes whichever address you pass as `--sender`, i.e.
 `backend-signer`:
@@ -77,3 +77,8 @@ Copy the deployed address into the Next.js app's `LOYALTY_CARD_ADDRESS`, and
 that same `backend-signer`'s private key into `BACKEND_WALLET_PRIVATE_KEY` -
 fund that address with a small amount of Base Sepolia ETH for gas, nothing
 else.
+
+## Deployed instance
+
+- **Network:** Base Sepolia (chain id 84532)
+- **Address:** [`0x7852CF770168255444bd8652e0f12fC43A6B5c00`](https://sepolia.basescan.org/address/0x7852CF770168255444bd8652e0f12fC43A6B5c00)
