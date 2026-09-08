@@ -3,9 +3,11 @@
 Ramesh's bakery, digitized: ten stamps, one free cake, and no way for a customer
 to photocopy their way to a free pastry. A customer signs in with an identity
 they already own - no browser extension, no seed phrase, no wallet to set up -
-and gets a wallet the moment they finish logging in. Staff award a stamp with
-one tap; the server refuses to write a stamp for anyone it can't independently
-verify.
+and gets a wallet the moment they finish logging in. The customer's dashboard
+shows a QR code; staff scan it on their own device after ringing up the
+purchase, and only that staff-authenticated scan can write a stamp - the
+server refuses to write one for anyone it can't independently verify, and a
+customer's own session has no path to award itself.
 
 ## Login methods enabled
 
@@ -22,37 +24,53 @@ on the way to work is never asked to connect anything.
 
 ## How the server knows who is asking
 
-The browser is never trusted. Every request that changes state carries a
-Privy **access token**, obtained client-side with `getAccessToken()` and sent
-as `Authorization: Bearer <token>`. The server:
+The browser is never trusted, and a customer's own device can never award
+itself a stamp - only a staff-authenticated device can, and only after
+scanning that specific customer's code.
 
-1. Verifies the token against Privy (`app/api/award/route.ts` ->
-   [`lib/privyServer.ts`](lib/privyServer.ts), via `@privy-io/node`'s
-   `client.utils().auth().verifyAccessToken()`). An invalid, expired, or
-   forged token throws, and the request is rejected *before* anything is
-   written - the route never proceeds on good faith.
-2. Takes the verified token's `user_id` (a Privy DID) and looks up that
-   user's embedded wallet address directly from Privy's user directory
-   (`client.users()._get(userId)`), never from anything the client sent in
-   the request body.
-3. Calls `awardStamp(address)` on the [`LoyaltyCard`](contracts/src/LoyaltyCard.sol)
-   contract on Base Sepolia, using a backend signer wallet that is the
-   contract's `owner` - the only account allowed to write.
+1. The customer's dashboard authenticates with a Privy **access token**
+   (`getAccessToken()`, sent as `Authorization: Bearer <token>`) to
+   `app/api/qr-claim`, which verifies it against Privy
+   ([`lib/privyServer.ts`](lib/privyServer.ts), via `@privy-io/node`'s
+   `client.utils().auth().verifyAccessToken()`), resolves the verified
+   token's `user_id` to that user's embedded wallet address from Privy's
+   user directory, and returns a short-lived, HMAC-signed claim binding that
+   wallet address to a random nonce (`lib/staffAuth.ts`) - never the raw
+   access token itself, which never needs to leave the customer's device.
+2. The dashboard renders that claim as a QR code (`app/components/CustomerQRCode.tsx`),
+   refreshing it before it expires.
+3. A staff device, unlocked with a separate PIN (`app/staff`,
+   `app/components/StaffScanner.tsx`), scans the code and posts it to
+   `app/api/staff/award`, which checks the PIN, verifies the claim's
+   signature and expiry, rejects a nonce it's already awarded (no replaying
+   a photographed code), and only then calls `awardStamp(address)` on the
+   [`LoyaltyCard`](contracts/src/LoyaltyCard.sol) contract on Base Sepolia
+   using a backend signer wallet that is the contract's `owner` - the only
+   account allowed to write.
 
 So the identity that gets stamped is derived entirely from a token the client
 cannot forge, resolved server-side to a wallet address the client never
-supplied. A photocopied punch card has no equivalent here: there is no
-client-held secret to copy, only a session token Privy issues and can verify.
+supplied - and the write itself requires a second, staff-side credential the
+customer never has. A photocopied punch card has no equivalent here: there is
+no client-held secret to copy, and no path from the customer's own session to
+the endpoint that actually writes a stamp.
 
 ## Architecture
 
 ```
-Browser (Next.js + @privy-io/react-auth)
+Customer browser (Next.js + @privy-io/react-auth)
   |  usePrivy(): ready, authenticated, user, login(), getAccessToken()
   v
-Next.js API routes (app/api/award, app/api/stamps)
-  |  verifyAccessToken() via @privy-io/node        -- lib/privyServer.ts
-  |  resolve embedded wallet address from the DID  -- lib/privyServer.ts
+app/api/qr-claim  -- verifies Privy token, resolves wallet address,
+  |                  issues a short-lived signed claim (lib/staffAuth.ts)
+  v
+QR code on the customer's dashboard  -- app/components/CustomerQRCode.tsx
+  |  (scanned by a separate device)
+  v
+Staff device (app/staff, PIN-gated)  -- app/components/StaffScanner.tsx
+  v
+app/api/staff/award  -- checks staff PIN, verifies claim signature/expiry/
+  |                     nonce (lib/staffAuth.ts)
   v
 LoyaltyCard.sol on Base Sepolia (owner-only awardStamp)  -- lib/contract.ts
 ```
@@ -66,9 +84,9 @@ LoyaltyCard.sol on Base Sepolia (owner-only awardStamp)  -- lib/contract.ts
 - **`app/`** - the Next.js App Router UI. `page.tsx` gates on Privy's `ready`
   flag before ever branching on `authenticated`, so the app never flashes the
   wrong screen while the SDK is still initializing.
-- **`lib/`** - server-only helpers (`privyServer.ts`, `contract.ts`) marked
-  with the `server-only` package so they can never be pulled into a client
-  bundle by mistake.
+- **`lib/`** - server-only helpers (`privyServer.ts`, `contract.ts`,
+  `staffAuth.ts`) marked with the `server-only` package so they can never be
+  pulled into a client bundle by mistake.
 
 ## Handling the dull states
 
@@ -79,11 +97,16 @@ LoyaltyCard.sol on Base Sepolia (owner-only awardStamp)  -- lib/contract.ts
   `authenticated` false; the app re-renders the same login screen, no special
   handling needed because there was never a local "logged in" flag to get out
   of sync.
-- **A stamp request that fails**: token verification failure -> 401 with a
-  "sign in again" message; no embedded wallet found -> 400; the on-chain call
-  reverting or timing out -> 502 with a "please ask staff to try again"
-  message. Every failure path is surfaced in the UI (see
-  `app/components/Dashboard.tsx`), never a silent no-op.
+- **The QR code going stale**: the claim it encodes expires 45 seconds after
+  it's issued; `CustomerQRCode` refetches a fresh one before that happens, so
+  the code on screen is (almost) never the expired one, with no tap required.
+- **A stamp request that fails**: on the staff side, a wrong PIN -> 401; an
+  invalid, expired, or already-used claim -> 400 with a "refresh the
+  customer's code" message; the on-chain call reverting or timing out -> 502
+  - and that last case deliberately does *not* burn the claim's nonce, so
+  staff can just scan again instead of the customer needing a fresh code.
+  Every failure path is surfaced in the UI (see
+  `app/components/StaffScanner.tsx`), never a silent no-op.
 
 ## Running it locally
 
@@ -104,6 +127,10 @@ You need:
 - A funded backend signer wallet (gas only, nothing else) whose private key
   is the contract's `owner` - goes in `BACKEND_WALLET_PRIVATE_KEY`. This is a
   server secret read from an environment variable, never committed.
+- Two more secrets for the staff-scan flow: `STAFF_QR_SECRET` (any random
+  string, e.g. `openssl rand -hex 32`) signs the customer's QR claim, and
+  `STAFF_PIN` is what staff enter once per device at `/staff` to unlock the
+  scanner.
 
 See [`.env.example`](.env.example) for the full list.
 

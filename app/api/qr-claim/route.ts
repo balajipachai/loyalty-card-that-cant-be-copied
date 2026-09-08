@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAccessTokenOrThrow, getEmbeddedWalletAddress } from "@/lib/privyServer";
-import { awardStampOnChain } from "@/lib/contract";
+import { issueCustomerClaim } from "@/lib/staffAuth";
 
 export const runtime = "nodejs";
 
@@ -10,14 +10,19 @@ function bearerToken(req: NextRequest): string | null {
   return header.slice("Bearer ".length).trim() || null;
 }
 
+/**
+ * Issues the short-lived signed claim the customer's dashboard encodes into a
+ * QR code. This route only ever proves identity - it never touches the
+ * chain - so a customer's own device still can't award itself a stamp; only
+ * `/api/staff/award` can, and only after a staff device scans the code this
+ * returns.
+ */
 export async function POST(req: NextRequest) {
   const token = bearerToken(req);
   if (!token) {
     return NextResponse.json({ error: "Missing access token." }, { status: 401 });
   }
 
-  // Verify the token before touching anything else - the identity we stamp
-  // against comes only from these claims, never from the request body.
   let userId: string;
   try {
     const claims = await verifyAccessTokenOrThrow(token);
@@ -34,19 +39,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  try {
-    const result = await awardStampOnChain(walletAddress);
-    return NextResponse.json({
-      success: true,
-      newStampCount: result.newStampCount,
-      freeCakeEarned: result.freeCakeEarned,
-      txHash: result.txHash,
-    });
-  } catch (err) {
-    console.error("awardStamp on-chain call failed", err);
-    return NextResponse.json(
-      { error: "Could not record the stamp on-chain. Please ask staff to try again." },
-      { status: 502 },
-    );
-  }
+  const signed = issueCustomerClaim(walletAddress);
+  return NextResponse.json(signed);
 }

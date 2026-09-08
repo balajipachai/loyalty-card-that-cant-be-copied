@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { StampGrid } from "./StampGrid";
+import { CustomerQRCode } from "./CustomerQRCode";
 
 type BalanceState =
   | { status: "loading" }
@@ -15,16 +16,9 @@ type BalanceState =
       walletAddress: string;
     };
 
-type AwardState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "success"; freeCakeEarned: boolean };
-
 export function Dashboard() {
   const { user, logout, getAccessToken } = usePrivy();
   const [balance, setBalance] = useState<BalanceState>({ status: "loading" });
-  const [award, setAward] = useState<AwardState>({ status: "idle" });
 
   // No setState synchronously up front here - the initial `useState` value is
   // already "loading", and callers that re-trigger this after it's settled
@@ -65,30 +59,6 @@ export function Dashboard() {
     setBalance({ status: "loading" });
     fetchBalance();
   }, [fetchBalance]);
-
-  const requestStamp = useCallback(async () => {
-    setAward({ status: "loading" });
-    const token = await getAccessToken();
-    if (!token) {
-      setAward({ status: "error", message: "Your session expired. Please sign in again." });
-      return;
-    }
-    try {
-      const res = await fetch("/api/award", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAward({ status: "error", message: data.error ?? "Could not add your stamp." });
-        return;
-      }
-      setAward({ status: "success", freeCakeEarned: data.freeCakeEarned });
-      await fetchBalance();
-    } catch {
-      setAward({ status: "error", message: "Could not reach the server. Ask staff to try again." });
-    }
-  }, [getAccessToken, fetchBalance]);
 
   const walletAddress = balance.status === "ready" ? balance.walletAddress : user?.wallet?.address;
 
@@ -134,26 +104,13 @@ export function Dashboard() {
         )}
       </div>
 
-      <div className="flex w-full max-w-sm flex-col items-center gap-3">
-        <button
-          type="button"
-          onClick={requestStamp}
-          disabled={award.status === "loading"}
-          className="w-full rounded-full bg-amber-900 px-6 py-3 text-base font-medium text-amber-50 shadow-sm transition-colors hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {award.status === "loading" ? "Adding stamp..." : "Tap here at the counter for a stamp"}
-        </button>
-        <p className="text-center text-xs text-amber-700">
-          Staff: tap this after ringing up the purchase. The server checks it&apos;s really this customer before it counts.
-        </p>
+      <CustomerQRCode />
 
-        {award.status === "success" && (
-          <p className="text-sm font-medium text-green-700">
-            {award.freeCakeEarned ? "Free cake earned! Card reset." : "Stamp added!"}
-          </p>
-        )}
-        {award.status === "error" && <p className="text-sm text-red-700">{award.message}</p>}
-      </div>
+      {balance.status === "ready" && (
+        <button type="button" onClick={retryBalance} className="text-xs font-medium text-amber-700 underline">
+          Refresh my card
+        </button>
+      )}
     </div>
   );
 }
